@@ -105,17 +105,39 @@ def tune_hyperparameters(csv_path: str, param_grid: dict, seq_length: int = None
             generator = SyntheticDataGenerator(config)
             
             # Pass categorical info along
-            generator.categorical_columns = categorical_columns if categorical_columns else []
+            generator.categorical_columns = generator_dummy.categorical_columns
             generator.categorical_mappings = generator_dummy.categorical_mappings
+            generator.reverse_categorical_mappings = generator_dummy.reverse_categorical_mappings
+            generator.scalers = generator_dummy.scalers
             generator.input_dim = generator_dummy.input_dim       
             generator.column_names = generator_dummy.column_names
+            generator.seq_length = generator_dummy.seq_length
             
             # Create data loaders
             train_subset = Subset(dataset, train_indices)
             val_subset = Subset(dataset, val_indices)
+
+            batch_size = max(1, min(config['batch_size'], len(train_subset), len(val_subset)))
+
+
             train_loader = DataLoader(train_subset, batch_size=config['batch_size'], shuffle=True)
             val_loader = DataLoader(val_subset, batch_size=config['batch_size'], shuffle=False)
             
+            if len(train_loader) == 0 or len(val_loader) == 0:
+                print(f"Warning: Not enough data for batch_size={batch_size}. Skipping combination.")
+                result_row = {
+                    **params,
+                    'final_train_loss': float('inf'),
+                    'final_val_loss': float('inf'),
+                    'final_val_r2': None,
+                    'status': 'insufficient_data'
+                }
+                results.append(result_row)
+                continue
+            
+            print(f"Created loaders: train_batches={len(train_loader)}, val_batches={len(val_loader)}, batch_size={batch_size}")
+            
+
             # Build model
             generator.build_model()
             
@@ -133,14 +155,19 @@ def tune_hyperparameters(csv_path: str, param_grid: dict, seq_length: int = None
                 break
             
             # Get final validation metrics
+            final_train_loss = history['train_loss'][-1] if history and history['train_loss'] else float('inf')
             final_val_loss = history['val_loss'][-1] if history and history['val_loss'] else float('inf')
             final_val_r2 = history['val_r2'][-1] if history and history['val_r2'] else None
             
+            if final_val_loss is None:
+                final_val_loss = float('inf')
+
             print(f"Combination {params} final validation loss: {final_val_loss:.6f}")
             
             # Store results
             result_row = {
                 **params,
+                'final_train_loss': final_train_loss,
                 'final_val_loss': final_val_loss,
                 'final_val_r2': final_val_r2,
                 'status': 'completed'
@@ -148,7 +175,7 @@ def tune_hyperparameters(csv_path: str, param_grid: dict, seq_length: int = None
             results.append(result_row)
             
             # Update best parameters if this is better
-            if final_val_loss < best_val_loss:
+            if final_val_loss != float('inf') and final_val_loss < best_val_loss:
                 best_val_loss = final_val_loss
                 best_params = params
                 best_history = history
@@ -164,6 +191,7 @@ def tune_hyperparameters(csv_path: str, param_grid: dict, seq_length: int = None
             # Store failed result
             result_row = {
                 **params,
+                'final_train_loss': float('inf'),
                 'final_val_loss': float('inf'),
                 'final_val_r2': None,
                 'status': f'failed: {str(e)}'

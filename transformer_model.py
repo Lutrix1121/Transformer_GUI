@@ -19,7 +19,25 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe.unsqueeze(0))
-    def forward(self, x): return x + self.pe[:, :x.size(1)]
+
+    def _create_positional_encoding(self, max_seq_length: int, d_model: int):
+        """Create or recreate the positional encoding buffer"""
+        pe = torch.zeros(max_seq_length, d_model)
+        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0), persistent=True)
+    
+    def forward(self, x):
+        seq_len = x.size(1)
+        # If the input sequence is longer than our current PE buffer, recreate it
+        if seq_len > self.pe.size(1):
+            print(f"Expanding positional encoding from {self.pe.size(1)} to {seq_len}")
+            self._create_positional_encoding(seq_len, self.d_model)
+            self.max_seq_length = seq_len
+        # Use only the needed portion of the positional encoding
+        return x + self.pe[:, :seq_len]
 
 class TabularTransformer(nn.Module):
     def __init__(self, input_dim: int, d_model: int = 64, nhead: int = 4, num_encoder_layers: int = 2, dim_feedforward: int = 128, dropout: float = 0.1, max_seq_length: int = 100):
@@ -29,8 +47,13 @@ class TabularTransformer(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
         self.output_layer = nn.Linear(d_model, input_dim)
+        
     def forward(self, src, src_mask=None):
-        x = self.embedding(src); x = self.positional_encoding(x); x = self.transformer_encoder(x, src_mask); output = self.output_layer(x); return output
+        x = self.embedding(src) 
+        x = self.positional_encoding(x)
+        x = self.transformer_encoder(x, src_mask)
+        output = self.output_layer(x)
+        return output
 
 class TabularDataset(Dataset):
     def __init__(self, data: np.ndarray, seq_length: int): self.data = data; self.seq_length = seq_length
@@ -96,14 +119,22 @@ class SyntheticDataGenerator:
 
     def train(self, train_loader, val_loader=None, epochs: Optional[int] = None, stop_flag = None):
         if self.model is None: self.build_model()
-        epochs = epochs if epochs is not None else self.config['epochs']; criterion = nn.MSELoss(); optimizer = optim.Adam(self.model.parameters(), lr=self.config['learning_rate']); history = {'train_loss': [], 'val_loss': [], 'val_r2': []}; print(f"Starting training for {epochs} epochs...")
-        best_val_loss = float('inf')
+        epochs = epochs if epochs is not None else self.config['epochs']
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=self.config['learning_rate'])
+        history = {'train_loss': [], 'val_loss': [], 'val_r2': []}
+        print(f"Starting training for {epochs} epochs...")
+        
         for epoch in range(epochs):
             if stop_flag and stop_flag():
                 print(f"Training stopped by user at epoch {epoch+1}")
                 break
 
-            self.model.train(); epoch_loss = 0; processed_batches = 0
+            # Training phase
+            self.model.train()
+            epoch_loss = 0
+            processed_batches = 0
+            
             for batch_idx, (x, y) in enumerate(train_loader):
                 # Check stop flag every 10 batches to avoid excessive checking
                 if batch_idx % 10 == 0 and stop_flag and stop_flag():
@@ -131,12 +162,71 @@ class SyntheticDataGenerator:
                 
             if processed_batches == 0: 
                 print(f"Epoch {epoch+1}/{epochs} - No batches processed.")
+                # Still append values to maintain history consistency
+                history['train_loss'].append(float('inf'))
+                history['val_loss'].append(float('inf'))
+                history['val_r2'].append(None)
                 continue
                 
             train_loss = epoch_loss / processed_batches
             history['train_loss'].append(train_loss)
+            
+            # Validation phase
             val_info = ""
-            # Validation loop can be added here if needed
+            if val_loader is not None:
+                self.model.eval()
+                val_loss = 0
+                val_processed = 0
+                all_predictions = []
+                all_targets = []
+                
+                with torch.no_grad():
+                    for x, y in val_loader:
+                        if x.ndim != 3 or y.ndim != 3 or x.shape[1] != self.seq_length or y.shape[1] != self.seq_length:
+                            continue
+                            
+                        x, y = x.to(self.device), y.to(self.device)
+                        output = self.model(x)
+                        
+                        if output.shape != y.shape:
+                            continue
+                            
+                        loss = criterion(output, y)
+                        if torch.isnan(loss):
+                            continue
+                            
+                        val_loss += loss.item()
+                        val_processed += 1
+                        
+                        # Collect predictions and targets for R2 calculation
+                        all_predictions.extend(output.cpu().numpy().flatten())
+                        all_targets.extend(y.cpu().numpy().flatten())
+                
+                if val_processed > 0:
+                    avg_val_loss = val_loss / val_processed
+                    history['val_loss'].append(avg_val_loss)
+                    
+                    # Calculate R2 score
+                    if len(all_predictions) > 0 and len(all_targets) > 0:
+                        try:
+                            val_r2 = r2_score(all_targets, all_predictions)
+                            history['val_r2'].append(val_r2)
+                            val_info = f" - Val Loss: {avg_val_loss:.6f} - Val R2: {val_r2:.4f}"
+                        except:
+                            history['val_r2'].append(None)
+                            val_info = f" - Val Loss: {avg_val_loss:.6f} - Val R2: N/A"
+                    else:
+                        history['val_r2'].append(None)
+                        val_info = f" - Val Loss: {avg_val_loss:.6f} - Val R2: N/A"
+                else:
+                    history['val_loss'].append(float('inf'))
+                    history['val_r2'].append(None)
+                    val_info = " - Val: No valid batches"
+            else:
+                # No validation loader provided
+                history['val_loss'].append(None)
+                history['val_r2'].append(None)
+                
             print(f'Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}{val_info}')
             
         print("Training finished.")
@@ -429,17 +519,36 @@ class SyntheticDataGenerator:
             self.input_dim = model_state['input_dim']; self.column_names = model_state['column_names']
             self.scalers = model_state['scalers']; self.categorical_mappings = model_state.get('categorical_mappings', {})
             self.reverse_categorical_mappings = model_state.get('reverse_categorical_mappings')
+
             if not self.reverse_categorical_mappings and self.categorical_mappings:
                  self.reverse_categorical_mappings = { col: {v: k for k, v in inv_map.items()} for col, inv_map in self.categorical_mappings.items() }
+            
             self.categorical_columns = model_state.get('categorical_columns', [])
             self.seq_length = model_state.get('seq_length', self.config.get('max_seq_length', 50))
-            self.config['max_seq_length'] = self.seq_length # Ensure config reflects loaded seq_length
-            # Ensure new config defaults exist if loading older model
+
+            current_seq_length = self.config.get('max_seq_length', self.seq_length)
+            self.seq_length = current_seq_length
+            self.config['max_seq_length'] = current_seq_length
             self.config.setdefault('generation_noise_factor', 0.01)
             self.config.setdefault('categorical_sampling_method', 'nearest')
 
-            self.model = self.build_model(); self.model.load_state_dict(model_state['model_state_dict']); self.model.eval()
-            print(f"Model loaded from {path} (Seq Len: {self.seq_length})")
+            try:
+                self.model.load_state_dict(model_state['model_state_dict'])
+                print(f"Model loaded from {path} (Seq Len: {self.seq_length})")
+            except RuntimeError as e:
+                if "size mismatch" in str(e) and "positional" in str(e).lower():
+                    print(f"Positional encoding size mismatch detected. Rebuilding with current seq_length={self.seq_length}")
+                    # Load state dict but skip the positional encoding buffer
+                    state_dict = model_state['model_state_dict']
+                    # Remove positional encoding buffer from saved state
+                    state_dict = {k: v for k, v in state_dict.items() if 'positional_encoding.pe' not in k}
+                    self.model.load_state_dict(state_dict, strict=False)
+                    print(f"Model loaded from {path} with rebuilt positional encoding (Seq Len: {self.seq_length})")
+                else:
+                    raise e
+            
+            self.model.eval()
+
         except FileNotFoundError: print(f"Error: Model file not found at {path}"); raise
         except Exception as e: print(f"Error loading model: {e}"); raise
 

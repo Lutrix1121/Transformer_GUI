@@ -114,8 +114,8 @@ class FindParametersWindow:
              "Training batch sizes"),
             ("learning_rate", "Learning rates (comma-separated)", "0.001,0.005",
              "Learning rates for optimizer"),
-            ("max_seq_length", "Max sequence lengths (comma-separated)", "30,50",
-             "Maximum sequence lengths for training")
+            ("max_seq_length", "Max sequence length", "50",
+             "Maximum sequence length for training")
         ]
 
         for i, (key, label, default, tip) in enumerate(params):
