@@ -4,10 +4,13 @@ import threading
 import os
 import TGUI_globals as globals
 from TGUI_tooltip import ToolTip
-from tuning import tune_hyperparameters
+from tuning import HyperparameterTuner  # Updated import
 
 
 class FindParametersWindow:
+    """
+    GUI window for hyperparameter tuning using the HyperparameterTuner class.
+    """
 
     def __init__(self, parent):
         self.parent = parent
@@ -17,8 +20,8 @@ class FindParametersWindow:
         self.progress_label = None
         self.progress_var = None
         
-        # Initialize the backend object immediately
-        self.backend = type('Backend', (), {'stop_search': False})()
+        # Initialize the hyperparameter tuner
+        self.tuner = HyperparameterTuner()
 
         # Create window
         self.window = tk.Toplevel(parent)
@@ -46,7 +49,6 @@ class FindParametersWindow:
         self.create_progress_section()
 
     def create_labeled_entry(self, parent, key, label_text, split, font_size=10, default_value="", tooltip=""):
-        """Create a labeled entry widget in a 2-column grid"""
         col = split % 2
         row = split // 2
 
@@ -72,7 +74,6 @@ class FindParametersWindow:
         return entry
 
     def create_search_settings(self):
-        """Create the search settings section"""
         frame = tk.LabelFrame(
             self.window, text="Search Settings",
             font=("Arial", 11, 'bold'),
@@ -88,7 +89,6 @@ class FindParametersWindow:
                                   tooltip="Number of training epochs for each parameter combination")
 
     def create_parameter_ranges(self):
-        """Create the parameter ranges section"""
         frame = tk.LabelFrame(
             self.window, text="Parameter Ranges",
             font=("Arial", 11, 'bold'),
@@ -123,7 +123,6 @@ class FindParametersWindow:
                                       default_value=default, tooltip=tip)
 
     def create_control_buttons(self):
-        """Create control buttons"""
         button_frame = tk.Frame(self.window, bg=self.current_theme['bg'])
         button_frame.pack(pady=20)
 
@@ -150,7 +149,6 @@ class FindParametersWindow:
         self.cancel_button.pack(side='left', padx=10)
 
     def create_progress_section(self):
-        """Create progress bar and label"""
         progress_frame = tk.Frame(self.window, bg=self.current_theme['bg'])
         progress_frame.pack(fill=tk.X, padx=10, pady=10)
 
@@ -177,7 +175,6 @@ class FindParametersWindow:
     # Functionality
     # ------------------------------
     def update_progress(self, current, total):
-        """Update progress bar and label"""
         progress = (current / total) * 100
         self.progress_var.set(progress)
         self.progress_label.config(
@@ -186,7 +183,6 @@ class FindParametersWindow:
         self.window.update()
 
     def parse_parameter_lists(self):
-        """Parse and validate all parameter lists"""
         def parse_list(input_str, param_name, value_type):
             if not input_str.strip():
                 raise ValueError(f"{param_name} cannot be empty!")
@@ -212,14 +208,10 @@ class FindParametersWindow:
         }
 
     def start_search(self):
-        """Start parameter search in a thread"""
         if self.search_thread and self.search_thread.is_alive():
             messagebox.showwarning("Warning", "Search already in progress!")
             return
 
-        # Reset the stop flag
-        self.backend.stop_search = False
-        
         # Update UI state
         self.search_button.config(state='disabled', text="Searching...")
         self.cancel_button.config(text="Stop Search", bg='orange')
@@ -229,10 +221,9 @@ class FindParametersWindow:
         self.search_thread.start()
 
     def stop_search(self):
-        """Stop the current search"""
         if self.search_thread and self.search_thread.is_alive():
-            # Set stop flag
-            self.backend.stop_search = True
+            # Stop the tuner
+            self.tuner.stop()
             self.update_progress_message("Stopping search, please wait...", "orange")
             
             # Start a separate thread to handle the stopping process
@@ -244,7 +235,6 @@ class FindParametersWindow:
             self.exit_window()
 
     def _handle_stop_process(self):
-        """Handle the stopping process in a separate thread"""
         try:
             # Wait for the search thread to finish (with longer timeout)
             self.search_thread.join(timeout=10.0)
@@ -257,22 +247,17 @@ class FindParametersWindow:
             self.window.after(0, self._reset_ui_after_stop)
 
     def _reset_ui_after_stop(self):
-        """Reset UI state after stopping (runs on main thread)"""
         self.search_button.config(state='normal', text="Start the search")
         self.cancel_button.config(text="Cancel", bg='red')
         
-        if self.backend.stop_search:
+        if self.tuner.stop_requested:
             self.update_progress_message("Search stopped by user", "red")
         
         # Reset progress bar
         self.progress_var.set(0)
 
     def search_parameters_worker(self):
-        """Worker function for parameter search"""
         try:
-            # Reset stop flag at the beginning
-            self.backend.stop_search = False
-        
             try:
                 if not globals.FILENAME:
                     self.update_progress_message("Error: No data file selected", "red")
@@ -297,7 +282,8 @@ class FindParametersWindow:
 
                 results_csv_path = os.path.join(globals.SAVEPATH, "tuning_results.csv")
 
-                best_params, best_history = tune_hyperparameters(
+                # Use the tuner class
+                best_params, best_history = self.tuner.run_tuning(
                     csv_path=globals.FILENAME,
                     param_grid=params,
                     seq_length=None,
@@ -305,10 +291,10 @@ class FindParametersWindow:
                     categorical_columns=globals.CATEGORICAL_COLUMNS,
                     results_csv=results_csv_path,
                     progress_callback=self.update_progress,
-                    stop_flag=lambda: self.backend.stop_search
+                    stop_flag=lambda: self.tuner.stop_requested
                 )
 
-                if self.backend.stop_search:
+                if self.tuner.stop_requested:
                     self.update_progress_message("Search cancelled by user", "red")
                     return
 
@@ -321,21 +307,20 @@ class FindParametersWindow:
                 self.window.destroy()
 
             except ValueError as e:
-                if not self.backend.stop_search:
+                if not self.tuner.stop_requested:
                     self.update_progress_message(f"Error: {e}", "red")
             except Exception as e:
-                if not self.backend.stop_search:
+                if not self.tuner.stop_requested:
                     self.update_progress_message(f"Error: {e}", "red")
                     
         except Exception as e:
-            if not self.backend.stop_search:
+            if not self.tuner.stop_requested:
                 self.update_progress_message(f"Error: {e}", "red")
         finally:
             # Reset UI state when worker finishes
             self.window.after(0, self._reset_ui_after_stop)
 
     def update_progress_message(self, message, color="black"):
-        """Update only the text message above progress bar"""
         def update_ui():
             if self.progress_label and self.progress_label.winfo_exists():
                 self.progress_label.config(text=message, fg=color)
@@ -348,7 +333,6 @@ class FindParametersWindow:
             self.window.after(0, update_ui)
     
     def exit_window(self):
-        """Handle window exit with running thread cleanup"""
         if self.search_thread and self.search_thread.is_alive():
             response = messagebox.askyesno(
                 "Exit",
@@ -356,8 +340,8 @@ class FindParametersWindow:
                 parent=self.window
             )
             if response:
-                # Set stop flag
-                self.backend.stop_search = True
+                # Stop the tuner
+                self.tuner.stop()
                 self.update_progress_message("Stopping search...", "red")
                 
                 # Wait for thread to finish with longer timeout
@@ -376,7 +360,35 @@ class FindParametersWindow:
             if response:
                 self.window.destroy()
 
+    def get_tuner_status(self):
+        """
+        Get current status of the tuner.
+        
+        Returns:
+            dict: Dictionary with current status information
+        """
+        current, total, running = self.tuner.get_progress()
+        best_params, best_loss, _ = self.tuner.get_best_results()
+        
+        return {
+            'current_combination': current,
+            'total_combinations': total,
+            'is_running': running,
+            'best_params': best_params,
+            'best_loss': best_loss,
+            'stop_requested': self.tuner.stop_requested
+        }
 
-# Legacy function
+    def get_partial_results(self):
+        """
+        Get partial results from the tuner.
+        
+        Returns:
+            list: List of completed results so far
+        """
+        return self.tuner.get_all_results()
+
+
+# Legacy function for backward compatibility
 def findParameters(gui):
-    FindParametersWindow(gui)
+    return FindParametersWindow(gui)
