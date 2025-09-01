@@ -117,9 +117,9 @@ project/
 ├── TGUI_generate_samples.py        # Sample generation GUI
 ├── TGUI_setup_paths.py             # Path configuration GUI
 ├── TGUI_transformer_backend.py     # Backend interface
-├── TGUI_globals.py                 # Global variables (not shown)
-├── TGUI_theme.py                   # Theme management (not shown)
-└── TGUI_tooltip.py                 # Tooltip utilities (not shown)
+├── TGUI_globals.py                 # Global variables
+├── TGUI_theme.py                   # Theme management
+└── TGUI_tooltip.py                 # Tooltip utilities
 ```
 
 ## Model Architecture
@@ -211,14 +211,6 @@ The application includes comprehensive hyperparameter optimization:
 3. **Constraint Application**: Real-time constraint enforcement
 4. **Post-processing**: Scale restoration and categorical mapping
 
-## System Requirements
-
-- **Operating System**: Windows, macOS, or Linux
-- **Python**: 3.7 or higher
-- **Memory**: 4GB RAM minimum (8GB+ recommended for large datasets)
-- **Storage**: Sufficient space for datasets and generated samples
-- **GPU**: CUDA-compatible GPU recommended for faster training (optional)
-
 ## Known Limitations
 
 - **Sequence Length**: Very long sequences may require significant memory
@@ -240,19 +232,6 @@ Enable detailed logging by modifying the logging level in `tgui.py`:
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-## Contributing
-
-This project welcomes contributions for:
-- Additional constraint types
-- New sampling methods
-- Performance optimizations
-- Extended model architectures
-- Enhanced visualization features
-
 ## License
 
 Please refer to the project repository for licensing information.
-
-## Acknowledgments
-
-Built using PyTorch for deep learning capabilities and Tkinter for the graphical user interface. The transformer architecture is adapted for tabular data synthesis with custom positional encoding and constraint handling.
